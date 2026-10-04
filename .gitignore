@@ -1,0 +1,17 @@
+# 排除运行时产物
+__pycache__/
+*.pyc
+.venv/
+node_modules/
+
+# 上游源码树按需重新 sparse clone（38M，且含 .git）
+# 若你希望把它一起纳管，删掉下面两行即可
+dsh-src/.git/
+dsh-src/
+
+# 编辑器/系统
+.vscode/
+.DS_Store
+
+# 会话备份：含完整对话历史，不入库（本地保留，按需另存）
+dsh-migrate/sessions.bak-*/

@@ -1,0 +1,23 @@
+# 给 headless profile 临时叠加迁移后的 router10 配置，用于验证迁移是否真的可用。
+- id: llm-pi-ai
+  name: '@deepseek-ai/dsh-llm-pi-ai'
+  config:
+    providers:
+      router10:
+        displayName: 10Router
+        apiKeyEnv: ROUTER10_API_KEY
+        api: openai-completions
+        baseURL: http://localhost:20128/v1
+        models:
+          - id: cbcn/glm-5.3-flash
+            contextWindow: 1000000
+          - id: oc/mimo-v2.5-free
+          - id: cbcn/hy4-preview
+            contextWindow: 1000000
+          - id: cl/deepseek/deepseek-v4.1-flash
+            contextWindow: 1000000
+- id: agent-default-model
+  name: '@deepseek-ai/dsh-agent-default-model'
+  config:
+    provider: router10
+    model: oc/mimo-v2.5-free

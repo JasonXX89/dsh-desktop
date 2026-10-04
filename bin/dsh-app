@@ -1,0 +1,149 @@
+#!/usr/bin/env bash
+# DeepSeek Harness — 以独立应用窗口启动（无地址栏/无浏览器 chrome）
+#
+# 生命周期：即点即用，关窗即停
+#   点图标 -> 本脚本拉起 dsh web（作为自己的子进程）-> 打开应用窗口
+#   关闭窗口 -> 检测到浏览器进程树退出 -> 本脚本停掉 dsh web 并退出
+#   不留后台常驻进程（无 systemd、无 nohup 脱离）
+#
+# 机制：
+#   1. 用固定端口启动 dsh web，输出里带一次性 token
+#   2. 取该 token 构造带鉴权的 URL（裸请求 303 + Set-Cookie，浏览器原生跟随）
+#   3. 用 Edge 的 --app= 模式打开 -> 独立窗口 + 独立任务栏项
+#   4. 独立 user-data-dir，不碰用户日常浏览器 profile
+#
+# app_id 说明（决定 Dock 图标/蓝点/分组，Wayland 下的坑）：
+#   Edge 在 Wayland 原生模式**无视 --class**，自己按
+#   `msedge-<URL主机>__-<profile-directory>` 造 app_id。
+#   ① 用 localhost 而非 127.0.0.1 —— 点号会让 app_id 变成非法 D-Bus 名（GNOME 加前导 -）
+#   ② --profile-directory=dsh 让 app_id 尾缀可控
+#   最终 app_id = msedge-localhost__-dsh，desktop 文件必须同名才能关联上。
+set -uo pipefail
+
+PORT="${DSH_WEB_PORT:-3080}"
+# 必须与 APP_ID 里嵌的主机名一致（见 --profile-directory 说明）
+HOST="localhost"
+APP_ID="msedge-localhost__-dsh"
+PROFILE_DIR_NAME="dsh"
+LOG="/tmp/dsh-web-${PORT}.log"
+PROFILE_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/dsh-webapp/profile"
+BROWSER="${DSH_APP_BROWSER:-microsoft-edge}"
+DSH_BIN="${DSH_BIN:-$HOME/.npm-global/bin/dsh}"
+
+# 依赖检查
+for c in "$BROWSER" curl; do
+  command -v "$c" >/dev/null 2>&1 || { echo "缺少依赖: $c" >&2; exit 1; }
+done
+[ -x "$DSH_BIN" ] || { echo "找不到 dsh: $DSH_BIN" >&2; exit 1; }
+
+mkdir -p "$PROFILE_DIR"
+
+SERVER_PID=""
+STARTED_SERVER=0
+
+# 只在「服务是本脚本拉起来的」时才停它；复用别处实例时不动别人的进程
+cleanup() {
+  if [ "$STARTED_SERVER" = "1" ] && [ -n "$SERVER_PID" ] && kill -0 "$SERVER_PID" 2>/dev/null; then
+    kill "$SERVER_PID" 2>/dev/null
+    for _ in $(seq 1 20); do
+      kill -0 "$SERVER_PID" 2>/dev/null || break
+      sleep 0.5
+    done
+    kill -9 "$SERVER_PID" 2>/dev/null
+  fi
+}
+trap cleanup EXIT INT TERM
+
+serving() { ss -ltn "sport = :$PORT" 2>/dev/null | grep -q LISTEN; }
+
+read_token() {
+  [ -f "$LOG" ] || return 1
+  grep -oE 'token=[A-Za-z0-9_-]+' "$LOG" | tail -1 | cut -d= -f2
+}
+
+start_server() {
+  : > "$LOG"
+  "$DSH_BIN" web --no-open --port "$PORT" >> "$LOG" 2>&1 &
+  SERVER_PID=$!
+  STARTED_SERVER=1
+  # 等端口起来 + token 出现（最多 45 秒）
+  for _ in $(seq 1 90); do
+    kill -0 "$SERVER_PID" 2>/dev/null || { echo "dsh web 提前退出，见 $LOG" >&2; tail -5 "$LOG" >&2; return 1; }
+    if grep -qE 'token=[A-Za-z0-9_-]+' "$LOG" 2>/dev/null && serving; then return 0; fi
+    sleep 0.5
+  done
+  echo "dsh web 启动超时，见 $LOG" >&2
+  tail -5 "$LOG" >&2
+  return 1
+}
+
+if serving; then
+  # 已在跑：沿用日志里的 token；若没有（被别的方式启动的），接管重启拿新 token
+  if ! TOKEN="$(read_token)"; then
+    echo "端口 $PORT 已占用但日志无 token，接管重启..." >&2
+    # 括号技巧构造模式，避免 pgrep 匹配到本脚本自身的命令行
+    for pid in $(pgrep -f "[d]sh web.*--port $PORT" 2>/dev/null); do
+      [ "$pid" != "$$" ] && kill "$pid" 2>/dev/null
+    done
+    sleep 3
+    start_server || exit 1
+    TOKEN="$(read_token)"
+  fi
+else
+  start_server || exit 1
+  TOKEN="$(read_token)"
+fi
+
+[ -n "${TOKEN:-}" ] || { echo "未能取得 token" >&2; exit 1; }
+URL="http://${HOST}:${PORT}/?token=${TOKEN}"
+
+# 用 app 模式开窗，后台运行，本脚本留在前台守着它的生命周期
+# 防重入：窗口已开着就不要再开第二个（否则两个实例共用一个服务，互相踩）
+if pgrep -f "[d]sh-webapp/profile" >/dev/null 2>&1; then
+  echo "DeepSeek Harness 已在运行。" >&2
+  exit 0
+fi
+
+"$BROWSER" \
+  --app="$URL" \
+  --user-data-dir="$PROFILE_DIR" \
+  --profile-directory="$PROFILE_DIR_NAME" \
+  --no-first-run \
+  --no-default-browser-check \
+  --disable-features=Translate \
+  "$@" &
+BROWSER_PID=$!
+
+# Chromium 常驻进程会让启动器先返回（fork 后父进程退出），
+# 所以不依赖单个 PID，而是按 profile 路径轮询整棵进程树。
+# 注意：[d] 只替换首字母，MARK 不能再以 d 开头，否则拼成 [d]dsh-… 永远匹配不上。
+MARK="sh-webapp/profile"
+
+# 窗口在不在：进程树匹配 或 启动器 pid 仍活，两者任一成立即可
+window_alive() {
+  pgrep -f "[d]$MARK" >/dev/null 2>&1 || kill -0 "$BROWSER_PID" 2>/dev/null
+}
+
+# ① 等窗口起来（最多 60 秒）
+up=0
+for _ in $(seq 1 60); do
+  if window_alive; then up=1; break; fi
+  sleep 1
+done
+if [ "$up" = "0" ]; then
+  # 失败判定前先做一次独立复核，避免把「只是匹配不到」误报成「没启动」
+  if pgrep -f "$BROWSER" >/dev/null 2>&1 && serving; then
+    echo "警告：未能匹配到窗口进程，但服务与浏览器均在运行，继续守望。" >&2
+  else
+    echo "浏览器未能启动（profile=$PROFILE_DIR）" >&2
+    exit 1
+  fi
+fi
+
+# ② 等窗口关闭
+while window_alive; do
+  sleep 2
+done
+
+# 窗口已关；trap cleanup 停掉本脚本拉起的服务
+exit 0
