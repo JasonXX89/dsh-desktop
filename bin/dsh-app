@@ -63,7 +63,12 @@ read_token() {
 
 start_server() {
   : > "$LOG"
-  "$DSH_BIN" web --no-open --port "$PORT" >> "$LOG" 2>&1 &
+  # 关键：dsh web 是 Next.js 应用，会读 http_proxy/https_proxy 给自己的出网
+  # 请求（含内部 fetch）套代理。若本机代理不可用或对 localhost 不放行，
+  # 服务会启动失败/中途崩溃，连带把窗口一起带走。
+  # 用 -u 在子进程里清掉这三个变量，不污染当前 shell。
+  env -u http_proxy -u https_proxy -u all_proxy -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
+    "$DSH_BIN" web --no-open --port "$PORT" >> "$LOG" 2>&1 &
   SERVER_PID=$!
   STARTED_SERVER=1
   # 等端口起来 + token 出现（最多 45 秒）
