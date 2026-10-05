@@ -1,0 +1,27 @@
+# 一次性验证补丁：router10 配置 + ptc 默认预设
+# 用途：确认 --patch 层里写 selectedDefault: ptc 时，新会话真的用 ptc
+- id: llm-pi-ai
+  name: '@deepseek-ai/dsh-llm-pi-ai'
+  config:
+    providers:
+      router10:
+        displayName: 10Router
+        apiKeyEnv: ROUTER10_API_KEY
+        api: openai-completions
+        baseURL: http://localhost:20128/v1
+        models:
+          - id: cbcn/glm-5.3-flash
+            contextWindow: 1000000
+          - id: oc/mimo-v2.5-free
+          - id: cl/deepseek/deepseek-v4.1-flash
+            contextWindow: 1000000
+- id: agent-default-model
+  name: '@deepseek-ai/dsh-agent-default-model'
+  config:
+    provider: router10
+    model: oc/mimo-v2.5-free
+- id: agent-preset-registry
+  name: '@deepseek-ai/dsh-agent-preset-registry'
+  config:
+    default: standard
+    selectedDefault: ptc
