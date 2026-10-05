@@ -15,3 +15,7 @@ dsh-src/
 
 # 会话备份：含完整对话历史，不入库（本地保留，按需另存）
 dsh-migrate/sessions.bak-*/
+
+# 未分组会话删除备份（含对话历史，不入库）
+dsh-migrate/deleted-ungrouped-*/
+dsh-migrate/deleted-ungrouped-*.tar.gz
